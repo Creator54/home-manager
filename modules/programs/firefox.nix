@@ -106,7 +106,7 @@ let
     '';
 
 in {
-  meta.maintainers = [ maintainers.rycee ];
+  meta.maintainers = [ maintainers.rycee maintainers.kira-bruneau ];
 
   imports = [
     (mkRemovedOptionModule [ "programs" "firefox" "enableAdobeFlash" ]
@@ -351,6 +351,94 @@ in {
               defaultText = "true if profile ID is 0";
               description = "Whether this is a default profile.";
             };
+
+            search = mkOption {
+              type = types.submodule {
+                options = {
+                  force = mkOption {
+                    type = with types; bool;
+                    default = false;
+                    description = ''
+                      Whether to force replace the existing search
+                      configuration. This is recommended since Firefox will
+                      replace the symlink for the search configuration on every
+                      launch, but note that you'll loose any existing
+                      configuration by enabling this.
+                    '';
+                  };
+
+                  default = mkOption {
+                    type = with types; nullOr str;
+                    default = null;
+                    example = "DuckDuckGo";
+                    description = ''
+                      The default search engine used in the address bar and search bar.
+                    '';
+                  };
+
+                  order = mkOption {
+                    type = with types; uniq (listOf str);
+                    default = [ ];
+                    example = ''
+                      [ "DuckDuckGo" "Google" ]
+                    '';
+                    description = ''
+                      The order the search engines are listed in. Any engines
+                      that aren't included in this list will be listed after
+                      these in an unspecified order.
+                    '';
+                  };
+
+                  engines = mkOption {
+                    type = with types;
+                      attrsOf (attrsOf (pkgs.formats.json { }).type);
+                    default = { };
+                    example = literalExpression ''
+                      {
+                        "Nix Packages" = {
+                          urls = [{
+                            template = "https://search.nixos.org/packages";
+                            params = [
+                              { name = "type"; value = "packages"; }
+                              { name = "query"; value = "{searchTerms}"; }
+                            ];
+                          }];
+
+                          icon = "''${pkgs.nixos-icons}/share/icons/hicolor/scalable/apps/nix-snowflake.svg";
+                          definedAliases = [ "@np" ];
+                        };
+
+                        "NixOS Wiki" = {
+                          urls = [{ template = "https://nixos.wiki/index.php?search={searchTerms}"; }];
+                          iconUpdateURL = "https://nixos.wiki/favicon.png";
+                          updateInterval = 24 * 60 * 60 * 1000; # every day
+                          definedAliases = [ "@nw" ];
+                        };
+
+                        "Bing".metaData.hidden = true;
+                        "Google".metaData.alias = "@g"; # builtin engines only support specifying one additional alias
+                      }
+                    '';
+                    description = ''
+                      Attribute set of search engine configurations.
+                      Engines that only have metaData specified will be
+                      treated as builtin to Firefox.
+
+                      See <link xlink:href=
+                      "https://searchfox.org/mozilla-central/rev/669329e284f8e8e2bb28090617192ca9b4ef3380/toolkit/components/search/SearchEngine.jsm#1138-1177"
+                      > SearchEngine.jsm </link> in Firefox's source for
+                      available options. We maintain a mapping to let you specify
+                      all options in the referenced link without underscores,
+                      but it may fall out of date with future options.
+
+                      icon is also a special option added by home-manager to
+                      make it convenient to specify absolute icon paths.
+                    '';
+                  };
+                };
+              };
+              default = { };
+            };
           };
         }));
         default = { };
@@ -443,6 +531,124 @@ in {
           text =
             mkUserJs profile.settings profile.extraConfig profile.bookmarks;
         };
+
+      "${profilesPath}/${profile.path}/search.json.mozlz4" = mkIf
+        (profile.search.default != null || length profile.search.order != [ ]
+          || profile.search.engines != { }) {
+            force = profile.search.force;
+            source = let
+              settings = {
+                version = 6;
+
+                engines = let
+                  allEngines = (profile.search.engines //
+                    # If search.default isn't in search.engines, assume it's
+                    # app provided and include it in the set of all engines
+                    optionalAttrs (profile.search.default != null
+                      && !(hasAttr profile.search.default
+                        profile.search.engines)) {
+                          ${profile.search.default} = { };
+                        });
+
+                  # Map allEngines to a list and order by search.order
+                  orderedEngineList = (imap (order: name:
+                    let engine = (allEngines.${name} or { });
+                    in engine // {
+                      inherit name;
+                      metaData = (engine.metaData or { }) // { inherit order; };
+                    }) profile.search.order) ++ (mapAttrsToList
+                      (name: config: config // { inherit name; })
+                      (removeAttrs allEngines profile.search.order));
+
+                  engines = map (config:
+                    let
+                      name = config.name;
+                      isAppProvided = (removeAttrs config [ "name" "metaData" ])
+                        == { };
+                      metaData = config.metaData or { };
+                    in mapAttrs' (name: value: {
+                      # Map nice field names to internal field names.
+                      # This is intended to be exhaustive, but any future fields
+                      # will either have to be specified with an underscore,
+                      # or added to this map.
+                      name = {
+                        name = "_name";
+                        isAppProvided = "_isAppProvided";
+                        loadPath = "_loadPath";
+                        hasPreferredIcon = "_hasPreferredIcon";
+                        searchForm = "__searchForm";
+                        updateInterval = "_updateInterval";
+                        updateURL = "_updateURL";
+                        iconUpdateURL = "_iconUpdateURL";
+                        iconURL = "_iconURL";
+                        iconMapObj = "_iconMapObj";
+                        metaData = "_metaData";
+                        orderHint = "_orderHint";
+                        definedAliases = "_definedAliases";
+                        urls = "_urls";
+                      }.${name} or name;
+
+                      inherit value;
+                    }) ((removeAttrs config [ "icon" ])
+                      // (optionalAttrs (!isAppProvided)
+                        (optionalAttrs (config ? iconUpdateURL) {
+                          # Convenience to default iconURL to iconUpdateURL so
+                          # the icon is immediately downloaded from the URL
+                          iconURL = config.iconURL or config.iconUpdateURL;
+                        } // optionalAttrs (config ? icon) {
+                          # Convenience to specify absolute path to icon
+                          iconURL = "file://${config.icon}";
+                        } // {
+                          # Required for custom engine configurations,
+                          # loadPaths are unique identifiers that are generally
+                          # formatted like: [source]/path/to/engine.xml
+                          loadPath = ''
+                            [home-manager]/programs.firefox.profiles.${profile.name}.search.engines."${
+                              replaceChars [ "\\" ] [ "\\\\" ] name
+                            }"'';
+                        })) // {
+                          # Required fields for all engine configurations
+                          inherit name isAppProvided metaData;
+                        })) orderedEngineList;
+                in engines;
+
+                metaData = optionalAttrs (profile.search.default != null) {
+                  current = profile.search.default;
+
+                  # Hash algorithm from
+                  # https://searchfox.org/mozilla-central/rev/de15f9c109f9c474d00faf8032f559c236067c06/toolkit/components/search/SearchUtils.jsm#312-334
+                  hash = let
+                    # home-manager doesn't circumvent user consent and isn't
+                    # acting maliciously. We're modifying the search outside of
+                    # Firefox, but a claim by Mozilla to remove this would be very
+                    # anti-user, and is unlikely to be an issue for our use case.
+                    disclaimer =
+                      "By modifying this file, I agree that I am doing so "
+                      + "only within $appName itself, using official, user-driven search "
+                      + "engine selection processes, and in a way which does not circumvent "
+                      + "user consent. I acknowledge that any attempt to change this file "
+                      + "from outside of $appName is a malicious act, and will be responded "
+                      + "to accordingly.";
+
+                    salt = profile.path + profile.search.default
+                      + (builtins.replaceStrings [ "$appName" ] [ "Firefox" ]
+                        disclaimer);
+
+                    hash = removeSuffix "\n" (builtins.readFile
+                      (pkgs.runCommandNoCC "hash" { inherit salt; } ''
+                        echo -n "$salt" | ${pkgs.openssl}/bin/openssl dgst -sha256 -binary | base64 > "$out"
+                      ''));
+                  in hash;
+                } // {
+                  useSavedOrder = profile.search.order != [ ];
+                };
+              };
+            in pkgs.runCommandNoCC "search.json.mozlz4" { } ''
+              ${pkgs.mozlz4a}/bin/mozlz4a ${
+                pkgs.writeText "search.json" (builtins.toJSON settings)
+              } "$out"
+            '';
+          };
 
       "${profilesPath}/${profile.path}/extensions" =
         mkIf (cfg.extensions != [ ]) {

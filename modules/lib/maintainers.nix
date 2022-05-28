@@ -95,6 +95,12 @@
       fingerprint = "2BE3 BAFD 793E A349 ED1F  F00F 04D0 CEAF 916A 9A40";
     }];
   };
+  kira-bruneau = {
+    name = "Kira Bruneau";
+    email = "kira.bruneau@pm.me";
+    github = "kira-bruneau";
+    githubId = 382041;
+  };
   kubukoz = {
     name = "Jakub Kozłowski";
     email = "kubukoz@users.noreply.github.com";

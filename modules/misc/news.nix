@@ -653,6 +653,19 @@ in
           A new module is available: 'programs.bashmount'.
         '';
       }
+      {
+        time = "2022-08-11T16:37:32+00:00";
+        message = ''
+          It's now possible to configure the default search engine in Firefox
+          with `programs.firefox.profiles.<name>.search.default` and add custom
+          engines with `programs.firefox.profiles.<name>.search.engines`.
+
+          It's also recommended to enable
+          `programs.firefox.profiles.<name>.search.force = true` since Firefox
+          will replace the symlink for the search configuration on every launch,
+          but note that you'll loose any existing configuration by enabling this.
+        '';
+      }
     ];
   };
 }
